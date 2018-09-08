@@ -1,123 +1,138 @@
+'''
+Note that the img is processed in BGR space (same for vgg net)
+'''
+
 import tensorflow as tf
 import numpy as np
 import matplotlib.pyplot as plt
 import math
 import scipy.io
-
+import cv2
 class StyleTransferNet():
     def __init__(
-            self, style_img, keep_prob = 0.9, style_weight = 0.5, content_weight = 0.0005, tv_weight = 0.5,
-            pretrained_path = None, MEAN_PIXEL = np.array([ 123.68 ,  116.779,  103.939])):
-        self._style_img = np.array([style_img])
-        self._keep_prob = keep_prob
-        self._pretrained_path = pretrained_path
+            self, style_img, keep_prob = 0.9, style_weight = 1, content_weight = 50000, tv_weight = 8.5E-05,
+            is_training = True, pretrained_path = None, MEAN_PIXEL = np.array([103.939, 116.779, 123.68])):
+
+        if is_training:
+            self._style_img = np.array([style_img])
+            self._keep_prob = keep_prob
+            self._pretrained_path = pretrained_path
+            self._style_weight = style_weight
+            self._content_weight = content_weight
+            self._tv_weight = tv_weight
+
         self._MEAN_PIXEL = MEAN_PIXEL
-        self._style_weight = style_weight
-        self._content_weight = content_weight
-        self._tv_weight = tv_weight
         self._use_gpu = True
-        
+
         with tf.variable_scope("net", reuse=tf.AUTO_REUSE):
-            self.build()
-
-        # if use_gpu:
-        #     with tf.device('/device:GPU:0'):
-        #         with tf.variable_scope("net", reuse=tf.AUTO_REUSE):
-        #             self.build()
-        # else:
-        #     with tf.device('/device:CPU:0'):
-        #         with tf.variable_scope("net", reuse=tf.AUTO_REUSE):
-        #             self.build()
+            self.build(is_training)
 
 
-
-
-    def build(self):
+    def build(self, is_training):
         self._sess = tf.Session(config=tf.ConfigProto(allow_soft_placement=True))
 
-        STYLE_LAYERS = ('relu1_1', 'relu2_1', 'relu3_1', 'relu4_1', 'relu5_1')
-        CONTENT_LAYER = ['relu4_2']
-        
-        # Precompute style:
-        self._style_features = {}
-        with tf.device('/device:CPU:0'):
-            self._style_img_pre = self.preprocess(self._style_img, is_tensor = False)
-            self._style_vgg = self.vgg_net(self._style_img_pre, vgg_path = self._pretrained_path)
-            for layer in STYLE_LAYERS:
-                style_feature = self._sess.run(self._style_vgg[layer])
-                # Compute the Gram matrix:
-                style_feature = np.reshape(style_feature, (-1, style_feature.shape[3]))
-                gram = np.matmul(style_feature.T, style_feature) / style_feature.size
-                self._style_features[layer] = gram
-            print("Finish precomputing style features' gram matrices")
-                
-        # with tf.device('/device:GPU:0'):
-        self._X_transformed = self.image_transformation_net()
-        self._X_transformed_vgg = self.vgg_net(self._X_transformed, vgg_path = self._pretrained_path)
-        self._X_vgg = self.vgg_net(self._X_pre, vgg_path = self._pretrained_path)
-        
-        self._style_loss = self.losses(
-            self._X_transformed_vgg,
-            self._style_features,
-            layers = STYLE_LAYERS,
-            loss_type = self.style_loss,
-        )
-        self._feat_loss = self.losses(
-            self._X_transformed_vgg,
-            self._X_vgg,
-            layers = CONTENT_LAYER,
-            loss_type = self.feat_loss,
-        )
-        self._tv_loss = self.total_variation_regularizer(self._X_transformed)
-        self._mean_loss = self._style_weight * self._style_loss + \
-                          self._content_weight * self._feat_loss + \
-                          self._tv_weight * self._tv_loss
-        
+        STYLE_LAYERS = ['conv1_1', 'conv2_1', 'conv3_1', 'conv4_1', 'conv5_1']
+        CONTENT_LAYERS = ['conv5_2']
+
+        # Build image transformation net:
+        self.image_transformation_net()
+        save_list = tf.trainable_variables()
+        self._saver = tf.train.Saver(save_list)
+
+
+        if is_training:
+            # Precompute style:
+            self._style_features = {}
+            with tf.device('/device:CPU:0'):
+                self._style_img_pre = self.preprocess(self._style_img, is_tensor = False)
+                self._style_vgg = self.vgg_net(self._style_img_pre, vgg_path = self._pretrained_path)
+                for layer in STYLE_LAYERS:
+                    style_feature = self._sess.run(self._style_vgg[layer])
+                    # Compute the Gram matrix:
+                    style_feature = np.reshape(style_feature, (-1, style_feature.shape[3]))
+                    gram = np.matmul(style_feature.T, style_feature) / style_feature.size / 2
+                    self._style_features[layer] = gram
+                print("Finish precomputing style features' gram matrices")
+
+            # with tf.device('/device:GPU:0'):
+            self._X_transformed_pre = self.preprocess(self.image_transformation_net())
+            self._X_transformed_vgg = self.vgg_net(self._X_transformed_pre, vgg_path = self._pretrained_path)
+            self._X_vgg = self.vgg_net(self._X_pre, vgg_path = self._pretrained_path)
+
+            self._style_loss = self.losses(
+                self._X_transformed_vgg,
+                self._style_features,
+                layers = STYLE_LAYERS,
+                loss_type = self.style_loss,
+            )
+            self._feat_loss = self.losses(
+                self._X_transformed_vgg,
+                self._X_vgg,
+                layers = CONTENT_LAYERS,
+                loss_type = self.feat_loss,
+            )
+            self._tv_loss = self.total_variation_regularizer(self._pred)
+            self._mean_loss = self._style_weight * self._style_loss / len(STYLE_LAYERS) + \
+                              self._content_weight * self._feat_loss / len(CONTENT_LAYERS) + \
+                              self._tv_weight * self._tv_loss
+
+            self._optimizer = tf.train.AdamOptimizer(1e-3)
+            extra_update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
+            with tf.control_dependencies(extra_update_ops):
+                self._train_step = self._optimizer.minimize(self._mean_loss)
+
         self._init_op = tf.global_variables_initializer()
-        self._saver = tf.train.Saver()
-        self._sess.run(self._init_op)
+        self._sess = tf.Session()
+        # self._saver = tf.train.Saver()
 
 
 
     def image_transformation_net(self):
         self._X = tf.placeholder(shape = [None, None, None, None], dtype = tf.float32)
+        self._batch_size = tf.shape(self._X)[0]
         self._img_h = tf.shape(self._X)[1]
         self._img_w = tf.shape(self._X)[2]
         self._n_channel = tf.shape(self._X)[3]
-        self._X_pre = self.preprocess(self._X)
-        self._batch_size = tf.shape(self._X)[0]
         self._is_training = tf.placeholder(tf.bool)
         self._keep_prob_tensor = tf.placeholder(tf.float32)
+
+
+        self._X_pre = self.preprocess(self._X)
         # self._X_norm = tf.layers.batch_normalization(self._X, training=self._is_training)
-        self._X_norm = self.instance_norm(self._X_pre)
+        self._X_norm = self.instance_norm(self._X_pre / 255)
 
-        self._conv_module_1 = self.convolutional_module_with_max_pool(x = self._X_norm, inp_channel = 3, op_channel = 4, name = "module_1", strides = 1)
+        self._conv_layer_1 = self.convolutional_module(
+            x = self._X_norm,
+            inp_channel = 3,
+            op_channel = 4,
+            name = "module_1",
+        )
 
-        self._res_1 = self.residual_module(self._conv_module_1, name = "res_1", inp_channel = 4)
+        self._res_1 = self.residual_module(self._conv_layer_1, name = "res_1", inp_channel = 4)
         self._res_2 = self.residual_module(self._res_1, name = "res_2", inp_channel = 4)
         self._res_3 = self.residual_module(self._res_2, name = "res_3", inp_channel = 4)
         self._res_4 = self.residual_module(self._res_3, name = "res_4", inp_channel = 4)
 
-        self._deconv_1 = self.deconvolutional_layer(
-            self._res_4,
-            inp_shape = [self._batch_size, self._img_h / 2, self._img_w / 2, 4],
-            op_shape = [self._batch_size, self._img_h, self._img_h, 3],
-            kernel_size = 3,
-            strides = 2,
-            padding = 'SAME',
-            name = "deconv1"
-        )
-        # self._deconv_2 = self.deconvolutional_layer(
-        #     self._deconv_1,
-        #     inp_shape = [self._batch_size, 32, 32, 2],
-        #     op_shape = [self._batch_size, 64, 64, 1],
+        # self._deconv_1 = tf.nn.sigmoid(self.deconvolutional_layer(
+        #     self._res_4,
+        #     inp_shape = [self._batch_size, self._img_h / 2, self._img_w / 2, 4],
+        #     op_shape = [self._batch_size, self._img_h, self._img_h, 3],
         #     kernel_size = 3,
         #     strides = 2,
         #     padding = 'SAME',
-        #     name = "deconv2")
-        # self._X_reconstructed_batch_norm = tf.reshape(self._deconv_1, shape = [-1, self._img_h * self._img_w])
-
-        return self._deconv_1
+        #     name = "deconv1",
+        #     activated = False
+        # ))
+        self._resized = self.resize_convolution_layer(
+            self._res_4,
+            new_h = self._img_h,
+            new_w = self._img_w,
+            inp_channel = 4,
+            op_channel = 3,
+            name = "resized"
+        )
+        self._pred = self._resized * 255
+        return self._pred
 
 
 
@@ -125,7 +140,7 @@ class StyleTransferNet():
 
     # Define layers and modules:
     def convolutional_layer(self, x, name, inp_channel, op_channel, kernel_size=3, strides = 1, padding='VALID',
-                            pad = 1, dropout=False, not_activated=False):
+                            pad = 1, dropout=False, not_activated=False, not_normed = False):
         if pad != 0:
             x_padded = tf.pad(x, self.create_pad(4, pad))
         else:
@@ -136,12 +151,15 @@ class StyleTransferNet():
         z_conv = tf.nn.conv2d(x_padded, W_conv, strides=[1, strides, strides, 1], padding=padding) + b_conv
         a_conv = tf.nn.relu(z_conv)
         # h_conv = tf.layers.batch_normalization(a_conv, training = self._is_training, renorm = True)
-        h_conv = self.instance_norm(a_conv, n_channel = op_channel)
         if dropout:
             a_conv_dropout = tf.nn.dropout(a_conv, keep_prob=self._keep_prob)
             return a_conv_dropout
         if not_activated:
             return z_conv
+        if not_normed:
+            return a_conv
+
+        h_conv = self.instance_norm(a_conv, n_channel = op_channel)
         return h_conv
 
     def convolutional_layer_pretrained(self, x, filter, bias):
@@ -186,6 +204,22 @@ class StyleTransferNet():
             return h_deconv
         
         return z_deconv
+
+    def resize_convolution_layer(self, x, name, new_h, new_w, inp_channel, op_channel):
+        x_resized = tf.image.resize_images(x, size = (new_h, new_w))
+        x_resized_conv = tf.nn.sigmoid(self.convolutional_layer(
+            x_resized,
+            inp_channel = inp_channel,
+            op_channel = op_channel,
+            name = name + "_conv",
+            not_activated = True
+        ))
+        return x_resized_conv
+
+    def convolutional_module(self, x, inp_channel, op_channel, name):
+        conv1 = self.convolutional_layer(x, inp_channel = inp_channel, op_channel=op_channel, name = name + "_conv1")
+        conv2 = self.convolutional_layer(conv1, inp_channel = op_channel, op_channel=op_channel, name = name + "_conv2", strides = 2)
+        return conv2
 
 
     def convolutional_module_with_max_pool(self, x, inp_channel, op_channel, name, strides = 1):
@@ -390,38 +424,33 @@ class StyleTransferNet():
             # get batch size
             actual_batch_size = X[idx, :].shape[0]
 
-            op = self._sess.run(self._X_transformed, feed_dict={
+            op = self._sess.run(self._pred, feed_dict={
                 self._X: X[idx, :],
                 self._is_training: False,
                 self._keep_prob_tensor: 1.0})
             predictions[idx, :, :, :] = op
 
-        return (predictions * 255 + self._MEAN_PIXEL).astype(np.uint8)
+        return np.round(predictions).astype(np.uint8)
 
 
     # Train:
-    def fit(self, X, X_val = None, num_epoch = 1, batch_size = 16, weight_save_path=None, weight_load_path=None,
-            plot_losses=False, print_every = 1):
-        self._optimizer = tf.train.AdamOptimizer(1e-3)
-        extra_update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
-        with tf.control_dependencies(extra_update_ops):
-            self._train_step = self._optimizer.minimize(self._mean_loss)
-        self._sess = tf.Session()
+    def fit(self, X, X_val = None, num_epoch = 1, batch_size = 16, patience = None, weight_save_path=None, weight_load_path=None,
+            plot_losses=False, draw_img = False, print_every = 1):
         if weight_load_path is not None:
-            loader = tf.train.Saver()
-            loader.restore(sess=self._sess, save_path=weight_load_path)
+            self._saver.restore(sess=self._sess, save_path=weight_load_path)
             print("Weight loaded successfully")
         else:
             self._sess.run(tf.global_variables_initializer())
         if num_epoch > 0:
             print('Training Style Transfer Net for ' + str(num_epoch) + ' epochs')
             self.run_model(self._sess, X, X_val, num_epoch, batch_size, print_every,
-                           self._train_step, weight_save_path=weight_save_path, plot_losses=plot_losses)
+                           self._train_step, patience = patience, weight_save_path=weight_save_path,
+                           plot_losses=plot_losses, draw_img = draw_img)
 
-        # Adapt from Stanford's CS231n Assignment3
+    # Adapt from Stanford's CS231n Assignment3
     def run_model(self, session, Xd, X_val = None,
                   epochs=1, batch_size=1, print_every=1,
-                  training=None, plot_losses=False, weight_save_path=None, patience=None):
+                  training=None, plot_losses=False, draw_img = False, weight_save_path=None, patience=None):
         # shuffle indicies
 
         training_now = training is not None
@@ -478,8 +507,16 @@ class StyleTransferNet():
                              self._is_training: False,
                              self._keep_prob_tensor: 1.0}
                 val_loss = session.run(self._mean_loss, feed_dict=feed_dict)
+                feat_loss = session.run(self._feat_loss, feed_dict=feed_dict)
+                st_loss = session.run(self._style_loss, feed_dict=feed_dict)
+                tv_loss = session.run(self._tv_loss, feed_dict=feed_dict)
                 print("Validation loss: " + str(val_loss))
+                print("Content loss: " + str(feat_loss))
+                print("Style loss: " + str(st_loss))
+                print("TV loss: " + str(tv_loss))
+
                 val_losses.append(val_loss)
+
                 if training_now and val_loss <= min(val_losses) and weight_save_path is not None:
                     save_path = self._saver.save(session, save_path=weight_save_path)
                     print("Model's weights saved at %s" % save_path)
@@ -488,9 +525,24 @@ class StyleTransferNet():
                         early_stopping_cnt += 1
                     else:
                         early_stopping_cnt = 0
+
                     if early_stopping_cnt > patience:
                         print("Patience exceeded. Finish training")
                         return
+
+                if draw_img:
+                    fig = plt.figure()
+                    a = fig.add_subplot(2, 2, 1)
+                    plt.imshow(cv2.cvtColor(X_val[0], cv2.COLOR_BGR2RGB))
+                    a = fig.add_subplot(2, 2, 2)
+                    prediction = self.predict(X_val[:1])[0]
+                    plt.imshow(cv2.cvtColor(prediction, cv2.COLOR_BGR2RGB))
+                    a = fig.add_subplot(2, 2, 3)
+                    plt.imshow(cv2.cvtColor(X_val[1], cv2.COLOR_BGR2RGB))
+                    a = fig.add_subplot(2, 2, 4)
+                    prediction_2 = self.predict(X_val[1:2])[0]
+                    plt.imshow(cv2.cvtColor(prediction_2, cv2.COLOR_BGR2RGB))
+                    plt.show()
             else:
                 save_path = self._saver.save(session, save_path=weight_save_path)
                 print("Model's weights saved at %s" % save_path)
@@ -565,29 +617,6 @@ class StyleTransferNet():
         sum_square_diff = tf.reduce_sum(tf.reduce_sum(square_dif, axis = -1), axis = -1) # batch_size
         return tf.reduce_mean(sum_square_diff)
 
-    # def style_loss_v2(self, img, style_img):
-    #     img_gram = self.gram_tensor(img) # batch_size x batch_size x n_channel x n_channel
-    #     style_img_gram = self.gram_tensor(style_img) # batch_size x batch_size x n_channel x n_channel
-
-    #     diff = img_gram - style_img_gram
-    #     square_dif = diff * diff # batch_size x batch_size x n_channel x n_channel
-
-    #     sum_square_diff = tf.reduce_sum(tf.reduce_sum(square_dif, axis = -1), axis = -1) # batch_size x batch_size
-    #     return tf.reduce_mean(tf.diag_part(sum_square_diff))
-
-    # def gram_tensor(self, img):
-    #     # return shape: batch_size x batch_size x n_channel x n_channel
-    #     h = tf.shape(img)[1]
-    #     w = tf.shape(img)[2]
-    #     n_channel = tf.shape(img)[3]
-
-    #     img_reshaped = tf.reshape(img, shape = [-1, h * w, n_channel])
-    #     img_transposed = tf.transpose(img_reshaped, perm = [0, 2, 1])
-    #     gram_tensor = tf.tensordot(img_reshaped, img_transposed, axes = [[1], [2]])
-    #     gram_tensor_transposed = tf.transpose(gram_tensor, perm = [0, 2, 1, 3])
-
-
-    #     return gram_tensor_transposed / tf.cast(h, tf.float32) / tf.cast(w, tf.float32) / tf.cast(n_channel, tf.float32)
 
     def gram_mats(self, img):
         # return shape: batch_size x n_channel x n_channel
@@ -597,15 +626,7 @@ class StyleTransferNet():
 
         img_reshaped = tf.reshape(img, shape = [-1, h * w, n_channel])
         img_transposed = tf.transpose(img_reshaped, perm = [0, 2, 1])
-        return tf.matmul(img_transposed, img_reshaped) / (tf.cast(h, tf.float32) * tf.cast(w, tf.float32) * tf.cast(n_channel, tf.float32))
-        # gram_tensor = tf.tensordot(img_reshaped, img_transposed, axes = [[1], [2]])
-        # gram_tensor_transposed = tf.transpose(gram_tensor, perm = [0, 2, 1, 3])
-
-        # mask = tf.reshape(tf.eye(num_rows = batch_size), shape = [batch_size, batch_size, 1, 1])
-
-        # gram_mats = tf.reduce_sum(gram_tensor_transposed * mask, axis = 1)
-
-        # return gram_mats / tf.cast(h, tf.float32) / tf.cast(w, tf.float32) / tf.cast(n_channel, tf.float32)
+        return tf.matmul(img_transposed, img_reshaped) / (2 * tf.cast(h, tf.float32) * tf.cast(w, tf.float32) * tf.cast(n_channel, tf.float32))
 
     # https://github.com/lengstrom/fast-style-transfer/blob/master/src/vgg.py
     def vgg_net(self, img, vgg_path):
@@ -654,9 +675,9 @@ class StyleTransferNet():
     def preprocess(self, img, is_tensor = True):
         print("Preprocess image.")
         if is_tensor:
-            return (img - self._MEAN_PIXEL) / 255
+            return (img - self._MEAN_PIXEL)
         else:
-            return ((img - self._MEAN_PIXEL) / 255).astype(np.float32)
+            return (img - self._MEAN_PIXEL).astype(np.float32)
     
     
 
