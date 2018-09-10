@@ -10,7 +10,7 @@ import scipy.io
 import cv2
 class StyleTransferNet():
     def __init__(
-            self, style_img, keep_prob = 0.9, style_weight = 1, content_weight = 50000, tv_weight = 8.5E-05,
+            self, style_img, keep_prob = 0.9, style_weight = 1, content_weight = 4E5, tv_weight = 1,
             is_training = True, pretrained_path = None, MEAN_PIXEL = np.array([103.939, 116.779, 123.68])):
 
         if is_training:
@@ -50,7 +50,7 @@ class StyleTransferNet():
                     style_feature = self._sess.run(self._style_vgg[layer])
                     # Compute the Gram matrix:
                     style_feature = np.reshape(style_feature, (-1, style_feature.shape[3]))
-                    gram = np.matmul(style_feature.T, style_feature) / style_feature.size / 2
+                    gram = np.matmul(style_feature.T, style_feature) / (style_feature.size * 2)
                     self._style_features[layer] = gram
                 print("Finish precomputing style features' gram matrices")
 
@@ -412,31 +412,39 @@ class StyleTransferNet():
     def predict(self, X, batch_size = None):
         if batch_size is None:
             batch_size = X.shape[0]
-        train_indicies = np.arange(X.shape[0])
-        predictions = np.zeros(shape = X.shape)
+        if len(X.shape) == 4:
+            train_indicies = np.arange(X.shape[0])
+            predictions = np.zeros(shape = X.shape)
+            for i in range(int(math.ceil(X.shape[0] / batch_size))):
+                # generate indicies for the batch
+                start_idx = (i * batch_size) % X.shape[0]
+                idx = train_indicies[start_idx:start_idx + batch_size]
 
-        for i in range(int(math.ceil(X.shape[0] / batch_size))):
-            # generate indicies for the batch
-            start_idx = (i * batch_size) % X.shape[0]
-            idx = train_indicies[start_idx:start_idx + batch_size]
+                # create a feed dictionary for this batch
+                # get batch size
 
-            # create a feed dictionary for this batch
-            # get batch size
-            actual_batch_size = X[idx, :].shape[0]
-
-            op = self._sess.run(self._pred, feed_dict={
-                self._X: X[idx, :],
-                self._is_training: False,
-                self._keep_prob_tensor: 1.0})
-            predictions[idx, :, :, :] = op
-
-        return np.round(predictions).astype(np.uint8)
-
+                op = self._sess.run(self._pred, feed_dict={
+                    self._X: X[idx, :],
+                    self._is_training: False,
+                    self._keep_prob_tensor: 1.0})
+                predictions[idx, :, :, :] = op
+            return np.round(predictions).astype(np.uint8)
+        else:
+            predictions = []
+            for img in X:
+                img = np.array([img])
+                prediction = self._sess.run(self._pred, feed_dict={
+                    self._X: img,
+                    self._is_training: False,
+                    self._keep_prob_tensor: 1.0})
+                predictions.append(np.round(prediction[0]).astype(np.uint8))
+            return np.array(predictions)
 
     # Train:
     def fit(self, X, X_val = None, num_epoch = 1, batch_size = 16, patience = None, weight_save_path=None, weight_load_path=None,
             plot_losses=False, draw_img = False, print_every = 1):
         if weight_load_path is not None:
+            self._sess.run(self._init_op)
             self._saver.restore(sess=self._sess, save_path=weight_load_path)
             print("Weight loaded successfully")
         else:
