@@ -11,13 +11,14 @@ import cv2
 
 
 class CycleGAN():
-    def __init__(self, keep_prob=0.9, X_channel = 3, y_channel = 3, is_training=True):
+    def __init__(self, keep_prob=0.9, X_channel = 3, y_channel = 3, is_training=True, cyc_weight = 10):
 
         self._X_channel = X_channel
         self._y_channel = y_channel
 
         if is_training:
             self._keep_prob = keep_prob
+            self._cyc_weight = cyc_weight
 
 
         with tf.variable_scope("net", reuse=tf.AUTO_REUSE):
@@ -91,7 +92,7 @@ class CycleGAN():
 
             # Cyclic losses:
             self._cyc_loss = self.mean_square(self._X - self._cyc_X) + self.mean_square(self._y - self._cyc_y)
-            self._g_loss = self._g_X_loss + self._g_y_loss + 10 * self._cyc_loss
+            self._g_loss = self._g_X_loss + self._g_y_loss + self._cyc_weight * self._cyc_loss
 
             self._total_loss = self._g_loss + self._d_loss
 
@@ -205,11 +206,6 @@ class CycleGAN():
 
         h_conv = tf.layers.batch_normalization(a_conv, training = self._is_training, renorm = True)
         return h_conv
-
-    def convolutional_layer_pretrained(self, x, filter, bias):
-        W_conv = tf.constant(filter)
-        b_conv = tf.constant(bias)
-        return tf.nn.conv2d(x, W_conv, strides=[1, 1, 1, 1], padding='SAME') + b_conv
 
     def depthwise_separable_conv_layer(self, x, name, inp_channel, op_channel, depth_kernel,
                                        depth_multiplier=1, strides=1, pad=0, padding='SAME'):
@@ -486,7 +482,7 @@ class CycleGAN():
     # Train:
     def train(self, X, y, X_val = None, y_val = None, num_epoch=1, batch_size=16, patience=None, weight_save_path=None,
             weight_load_path=None,
-            plot_losses=False, draw_img=False, print_every=1):
+            plot_losses=False, draw_img=True, print_every=1):
 
         self._sess.run(self._init_op)
         if weight_load_path is not None:
@@ -501,25 +497,35 @@ class CycleGAN():
 
             val_losses = []
             early_stopping_cnt = 0
+            it_cnt = 0
+
+            n_batch = min(X.shape[0], y.shape[0]) // batch_size
 
             for e in range(num_epoch):
                 print("Epoch " + str(e + 1))
                 np.random.shuffle(X_indicies)
                 np.random.shuffle(y_indicies)
 
-                X_idx = X_indicies[0:batch_size]
-                y_idx = y_indicies[0:batch_size]
+                for i in range(n_batch):
+                    start_idx = batch_size * i
+                    X_idx = X_indicies[start_idx: start_idx + batch_size]
+                    y_idx = y_indicies[start_idx: start_idx + batch_size]
 
+                    # Train networks:
+                    feed_dict = {
+                        self._X: X[X_idx, :],
+                        self._y: y[y_idx, :],
+                        self._is_training: True,
+                        self._keep_prob_tensor: self._keep_prob
+                    }
+                    loss = self._sess.run(self._total_loss, feed_dict = feed_dict)
+                    self._sess.run(self._g_train_step, feed_dict = feed_dict)
+                    self._sess.run(self._d_train_step, feed_dict = feed_dict)
 
-                # Train generators:
-                feed_dict = {
-                    self._X: X[X_idx, :],
-                    self._y: y[y_idx, :],
-                    self._is_training: True,
-                    self._keep_prob_tensor: self._keep_prob
-                }
-                self._sess.run(self._g_train_step, feed_dict = feed_dict)
-                self._sess.run(self._d_train_step, feed_dict = feed_dict)
+                    if it_cnt % print_every == 0:
+                        print("Iteration " + str(i) + " with loss " + str(loss))
+
+                    it_cnt += 1
 
                 if X_val is not None:
                     feed_dict = {
@@ -555,14 +561,14 @@ class CycleGAN():
                         plt.imshow(cv2.cvtColor(X_val[0], cv2.COLOR_BGR2RGB))
 
                         a = fig.add_subplot(2, 2, 2)
-                        prediction = self.generate(X_val[:1], mode = 'X_to_y')[0]
+                        prediction = self.generate(X_val[:1, :], mode = 'X_to_y')[0]
                         plt.imshow(cv2.cvtColor(prediction, cv2.COLOR_BGR2RGB))
 
                         a = fig.add_subplot(2, 2, 3)
                         plt.imshow(cv2.cvtColor(y_val[0], cv2.COLOR_BGR2RGB))
 
                         a = fig.add_subplot(2, 2, 4)
-                        prediction_2 = self.generate(y_val[0], mode = 'y_to_X')[0]
+                        prediction_2 = self.generate(y_val[:1, :], mode = 'y_to_X')[0]
                         plt.imshow(cv2.cvtColor(prediction_2, cv2.COLOR_BGR2RGB))
 
                         plt.show()
