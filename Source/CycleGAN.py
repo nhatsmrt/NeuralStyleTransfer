@@ -33,10 +33,20 @@ class CycleGAN():
         self._is_training = tf.placeholder(tf.bool)
         self._keep_prob_tensor = tf.placeholder(tf.float32)
 
-        self._X = tf.placeholder([None, None, None, None], dtype = tf.float32) # True X
-        self._y = tf.placeholder([None, None, None, None], dtype = tf.float32) # True y
-        self._y_generated = self.generator(self._X, op_shape = tf.shape(self._y), name = "gen_X_to_y") # Generated y from X
-        self._X_generated = self.generator(self._y, op_shape = tf.shape(self._X), name = "gen_y_to_X") # Generated X from y
+        self._X = tf.placeholder(shape = [None, None, None, self._X_channel], dtype = tf.float32) # True X
+        self._y = tf.placeholder(shape = [None, None, None, self._y_channel], dtype = tf.float32) # True y
+        self._y_generated = self.generator(
+            self._X,
+            op_size = (tf.shape(self._y)[1], tf.shape(self._y)[2]),
+            op_channel = self._y_channel,
+            name = "gen_X_to_y"
+        ) # Generated y from X
+        self._X_generated = self.generator(
+            self._y,
+            op_size = (tf.shape(self._X)[1], tf.shape(self._X)[2]),
+            op_channel = self._X_channel,
+            name = "gen_y_to_X"
+        ) # Generated X from y
 
 
         save_list = tf.trainable_variables()
@@ -51,8 +61,18 @@ class CycleGAN():
             self._y_generated_discriminator = self.discriminator(self._y_generated, name="disc_y")
 
 
-            self._cyc_X = self.generator(self._y_generated, op_shape = tf.shape(self._X), name = "gen_y_to_X")
-            self._cyc_y = self.generator(self._X_generated, op_shape = tf.shape(self._y), name = "gen_X_to_y")
+            self._cyc_X = self.generator(
+                self._y_generated,
+                op_size= (tf.shape(self._X)[1], tf.shape(self._X)[2]),
+                op_channel = self._X_channel,
+                name = "gen_y_to_X"
+            )
+            self._cyc_y = self.generator(
+                self._X_generated,
+                op_size  = (tf.shape(self._y)[1], tf.shape(self._y)[2]),
+                op_channel = self._y_channel,
+                name = "gen_X_to_y"
+            )
 
             # Discriminator losses:
             self._d_X_loss_1 = self.mean_square(self._X_discriminator - 1)
@@ -98,7 +118,7 @@ class CycleGAN():
         self._sess = tf.Session()
         # self._saver = tf.train.Saver()
 
-    def generator(self, x, name, op_shape):
+    def generator(self, x, name, op_size, op_channel):
         x_norm = tf.layers.batch_normalization(x, training=self._is_training)
         conv_layer_1 = self.convolutional_module(
             x = x_norm,
@@ -124,10 +144,10 @@ class CycleGAN():
         # ))
         resized = self.resize_convolution_layer(
             res_4,
-            new_h = op_shape[1],
-            new_w = op_shape[2],
+            new_h = op_size[0],
+            new_w = op_size[1],
             inp_channel=4,
-            op_channel = op_shape[3],
+            op_channel = op_channel,
             name = name + "resized"
         )
         op = resized * 255
@@ -139,10 +159,11 @@ class CycleGAN():
         x_channel = tf.shape(x)[3]
 
         x_norm = tf.layers.batch_normalization(x, training=self._is_training)
+
         conv_layer_1 = self.convolutional_module(
             x = x_norm,
-            inp_channel=3,
-            op_channel=4,
+            inp_channel = 3,
+            op_channel = 4,
             name = name + "module_1",
         )
 
@@ -151,10 +172,10 @@ class CycleGAN():
         res_3 = self.residual_module(res_2, name = name + "res_3", inp_channel=4)
         res_4 = self.residual_module(res_3, name = name + "res_4", inp_channel=4)
 
-        flat = tf.reshape(res_4, shape = [-1, x_h * x_w * x_channel])
+        res_4_pooled = self.global_average_pooling(res_4)
         fc = self.feed_forward(
-            flat,
-            inp_channel = x_h * x_w * x_channel,
+            res_4_pooled,
+            inp_channel = 4,
             op_channel = 1, op_layer = True,
             name = name + "_fc"
         )
@@ -268,7 +289,7 @@ class CycleGAN():
         conv2 = self.convolutional_layer(conv1, name + "_conv2", inp_channel, inp_channel, not_activated=True)
         res_layer = tf.nn.relu(tf.add(conv2, x, name="res"))
 
-        batch_norm = tf.layers.batch_normalization(res_layer, is_training=self._is_training, renorm = True)
+        batch_norm = tf.layers.batch_normalization(res_layer, training=self._is_training, renorm = True)
 
         return batch_norm
 
