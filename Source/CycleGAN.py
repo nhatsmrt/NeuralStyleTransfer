@@ -37,13 +37,13 @@ class CycleGAN():
         self._y = tf.placeholder(shape = [None, None, None, self._y_channel], dtype = tf.float32) # True y
         self._y_generated = self.generator(
             self._X,
-            op_size = (tf.shape(self._y)[1], tf.shape(self._y)[2]),
+            op_size = (tf.shape(self._X)[1], tf.shape(self._X)[2]),
             op_channel = self._y_channel,
             name = "gen_X_to_y"
         ) # Generated y from X
         self._X_generated = self.generator(
             self._y,
-            op_size = (tf.shape(self._X)[1], tf.shape(self._X)[2]),
+            op_size = (tf.shape(self._y)[1], tf.shape(self._y)[2]),
             op_channel = self._X_channel,
             name = "gen_y_to_X"
         ) # Generated X from y
@@ -503,6 +503,7 @@ class CycleGAN():
             early_stopping_cnt = 0
 
             for e in range(num_epoch):
+                print("Epoch " + str(e + 1))
                 np.random.shuffle(X_indicies)
                 np.random.shuffle(y_indicies)
 
@@ -529,6 +530,10 @@ class CycleGAN():
                     }
 
                     val_loss = self._sess.run(self._total_loss, feed_dict = feed_dict)
+                    val_losses.append(val_loss)
+
+                    if e % print_every == 0:
+                        print("Validation Total Loss: " + str(val_loss))
 
                     if val_loss <= min(val_losses) and weight_save_path is not None:
                         save_path = self._saver.save(self._sess, save_path=weight_save_path)
@@ -562,121 +567,6 @@ class CycleGAN():
 
                         plt.show()
 
-    # Adapt from Stanford's CS231n Assignment3
-    # def run_model(self, session, Xd, yd, X_val, y_val,
-    #               epochs=1, batch_size=1, print_every=1,
-    #               training=None, plot_losses=False, draw_img=False, weight_save_path=None, patience=None):
-    #
-    #     training_now = training is not None
-    #     # setting up variables we want to compute (and optimizing)
-    #     # if we have a training function, add that to things we compute
-    #     variables = []
-    #     if training_now:
-    #         variables.append(train_step for train_step in training)
-    #         self._keep_prob_passed = self._keep_prob
-    #     else:
-    #         self._keep_prob_passed = 1.0
-    #
-    #     # counter
-    #     iter_cnt = 0
-    #     val_losses = []
-    #     early_stopping_cnt = 0
-    #     for e in range(epochs):
-    #         print("Epoch " + str(e + 1))
-    #
-    #         # Shuffle indices:
-    #         X_indicies = np.arange(Xd.shape[0])
-    #         y_indicies = np.arange(yd.shape[0])
-    #         np.random.shuffle(X_indicies)
-    #         np.random.shuffle(y_indicies)
-    #
-    #         # keep track of losses and accuracy
-    #         losses = []
-    #         # make sure we iterate over the dataset once
-    #         for i in range(int(math.ceil(Xd.shape[0] / batch_size))):
-    #             # generate indicies for the batch
-    #             start_idx = (i * batch_size) % Xd.shape[0]
-    #             X_idx = train_indicies[start_idx:start_idx + batch_size]
-    #
-    #             # create a feed dictionary for this batch
-    #             # get batch size
-    #             actual_batch_size = Xd[idx, :].shape[0]
-    #
-    #             feed_dict = {self._X: Xd[idx, :],
-    #                          self._is_training: training_now,
-    #                          self._keep_prob_tensor: self._keep_prob_passed}
-    #             # have tensorflow compute loss and correct predictions
-    #             # and (if given) perform a training step
-    #             loss, _ = session.run(variables, feed_dict=feed_dict)
-    #             # print(session.run(self._style_loss, feed_dict = feed_dict))
-    #
-    #             # aggregate performance stats
-    #             losses.append(loss * actual_batch_size)
-    #
-    #             # print every now and then
-    #             if training_now and (iter_cnt % print_every) == 0:
-    #                 print("Iteration {0}: with minibatch training loss = {1:.3g}" \
-    #                       .format(iter_cnt, loss))
-    #             iter_cnt += 1
-    #
-    #         # Validate and/or save weights
-    #         if X_val is not None:
-    #             feed_dict = {self._X: X_val,
-    #                          self._is_training: False,
-    #                          self._keep_prob_tensor: 1.0}
-    #             val_loss = session.run(self._mean_loss, feed_dict=feed_dict)
-    #             feat_loss = session.run(self._feat_loss, feed_dict=feed_dict)
-    #             st_loss = session.run(self._style_loss, feed_dict=feed_dict)
-    #             tv_loss = session.run(self._tv_loss, feed_dict=feed_dict)
-    #             print("Validation loss: " + str(val_loss))
-    #             print("Content loss: " + str(feat_loss))
-    #             print("Style loss: " + str(st_loss))
-    #             print("TV loss: " + str(tv_loss))
-    #
-    #             val_losses.append(val_loss)
-    #
-    #             if training_now and val_loss <= min(val_losses) and weight_save_path is not None:
-    #                 save_path = self._saver.save(session, save_path=weight_save_path)
-    #                 print("Model's weights saved at %s" % save_path)
-    #             if patience is not None:
-    #                 if val_loss > min(val_losses):
-    #                     early_stopping_cnt += 1
-    #                 else:
-    #                     early_stopping_cnt = 0
-    #
-    #                 if early_stopping_cnt > patience:
-    #                     print("Patience exceeded. Finish training")
-    #                     return
-    #
-    #             if draw_img:
-    #                 fig = plt.figure()
-    #                 a = fig.add_subplot(2, 2, 1)
-    #                 plt.imshow(cv2.cvtColor(X_val[0], cv2.COLOR_BGR2RGB))
-    #                 a = fig.add_subplot(2, 2, 2)
-    #                 prediction = self.predict(X_val[:1])[0]
-    #                 plt.imshow(cv2.cvtColor(prediction, cv2.COLOR_BGR2RGB))
-    #                 a = fig.add_subplot(2, 2, 3)
-    #                 plt.imshow(cv2.cvtColor(X_val[1], cv2.COLOR_BGR2RGB))
-    #                 a = fig.add_subplot(2, 2, 4)
-    #                 prediction_2 = self.predict(X_val[1:2])[0]
-    #                 plt.imshow(cv2.cvtColor(prediction_2, cv2.COLOR_BGR2RGB))
-    #                 plt.show()
-    #         else:
-    #             save_path = self._saver.save(session, save_path=weight_save_path)
-    #             print("Model's weights saved at %s" % save_path)
-    #
-    #         total_loss = np.sum(losses) / (Xd.shape[0])
-    #         print("Epoch {1}, Overall loss = {0:.3g}" \
-    #               .format(total_loss, e + 1))
-    #         if plot_losses:
-    #             plt.plot(losses)
-    #             plt.grid(True)
-    #             plt.title('Epoch {} Loss'.format(e + 1))
-    #             plt.xlabel('minibatch number')
-    #             plt.ylabel('minibatch loss')
-    #             plt.show()
-    #     return total_loss
-    #
     def mean_square(self, x):
         return tf.reduce_mean(tf.square(x))
 
