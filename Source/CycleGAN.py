@@ -155,10 +155,6 @@ class CycleGAN():
         return op
 
     def discriminator(self, x, name):
-        x_h = tf.shape(x)[1]
-        x_w = tf.shape(x)[2]
-        x_channel = tf.shape(x)[3]
-
         x_norm = tf.layers.batch_normalization(x, training=self._is_training)
 
         conv_layer_1 = self.convolutional_module(
@@ -523,7 +519,7 @@ class CycleGAN():
                     self._sess.run(self._d_train_step, feed_dict = feed_dict)
 
                     if it_cnt % print_every == 0:
-                        print("Iteration " + str(i) + " with loss " + str(loss))
+                        print("Iteration " + str(it_cnt) + " with loss " + str(loss))
 
                     it_cnt += 1
 
@@ -538,8 +534,7 @@ class CycleGAN():
                     val_loss = self._sess.run(self._total_loss, feed_dict = feed_dict)
                     val_losses.append(val_loss)
 
-                    if e % print_every == 0:
-                        print("Validation Total Loss: " + str(val_loss))
+                    print("Validation Total Loss: " + str(val_loss))
 
                     if val_loss <= min(val_losses) and weight_save_path is not None:
                         save_path = self._saver.save(self._sess, save_path=weight_save_path)
