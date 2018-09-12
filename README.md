@@ -12,4 +12,4 @@ The style- and content-matching is not done at pixel space, but on feature repre
 
 ### After:
 
-![After](https://github.com/nhatsmrt/NeuralStyleTransfer/blob/CycleGAN/Predictions/la_muse_styled.jpg)
+![After](https://github.com/nhatsmrt/NeuralStyleTransfer/blob/CycleGAN/Predictions/la_muse_styled.png)
