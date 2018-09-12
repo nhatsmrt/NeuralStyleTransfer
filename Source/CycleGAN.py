@@ -54,7 +54,9 @@ class CycleGAN():
         self._saver = tf.train.Saver(save_list)
 
         if is_training:
-            self._optimizer = tf.train.AdamOptimizer(1e-3)
+            self._lr = tf.placeholder(shape = [], dtype = tf.float32)
+            self._optimizer_1 = tf.train.AdamOptimizer(self._lr)
+            self._optimizer_2 = tf.train.AdamOptimizer(self._lr)
 
             self._X_discriminator = self.discriminator(self._X, name="disc_X")
             self._X_generated_discriminator = self.discriminator(self._X_generated, name = "disc_X")
@@ -106,8 +108,8 @@ class CycleGAN():
             # self._g_X_train_step = self._optimizer.minimize(self._g_X_loss + 10 * self._cyc_loss, var_list = self._g_vars)
             # self._g_y_train_step = self._optimizer.minimize(self._g_y_loss + 10 * self._cyc_loss, var_list = self._g_vars)
 
-            self._d_train_step = self._optimizer.minimize(self._d_loss, var_list = self._d_vars)
-            self._g_train_step = self._optimizer.minimize(self._g_loss, var_list = self._g_vars)
+            self._d_train_step = self._optimizer_1.minimize(self._d_loss, var_list = self._d_vars)
+            self._g_train_step = self._optimizer_2.minimize(self._g_loss, var_list = self._g_vars)
 
 
             extra_update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
@@ -502,6 +504,11 @@ class CycleGAN():
                 np.random.shuffle(X_indicies)
                 np.random.shuffle(y_indicies)
 
+                if e < 100:
+                    lr = 0.0002
+                else:
+                    lr = 0.0002 - (e - 100) * 0.002 / (num_epoch - 100)
+
                 for i in range(n_batch):
                     start_idx = batch_size * i
                     X_idx = X_indicies[start_idx: start_idx + batch_size]
@@ -512,6 +519,7 @@ class CycleGAN():
                         self._X: X[X_idx, :],
                         self._y: y[y_idx, :],
                         self._is_training: True,
+                        self._lr: lr,
                         self._keep_prob_tensor: self._keep_prob
                     }
                     loss = self._sess.run(self._total_loss, feed_dict = feed_dict)
