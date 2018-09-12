@@ -93,7 +93,7 @@ class CycleGAN():
             self._g_y_loss = self.mean_square(self._y_generated_discriminator - 1)
 
             # Cyclic losses:
-            self._cyc_loss = self.mean_square(self._X - self._cyc_X) + self.mean_square(self._y - self._cyc_y)
+            self._cyc_loss = tf.reduce_mean(tf.abs(self._X - self._cyc_X)) + tf.reduce_mean(tf.abs(self._y - self._cyc_y))
             self._g_loss = self._g_X_loss + self._g_y_loss + self._cyc_weight * self._cyc_loss
 
             self._total_loss = self._g_loss + self._d_loss
