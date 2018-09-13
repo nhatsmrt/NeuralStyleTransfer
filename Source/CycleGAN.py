@@ -504,8 +504,8 @@ class CycleGAN():
     # Train:
     def train(
             self, X, y, X_val = None, y_val = None,
-            num_epoch=1, batch_size=16, buffer_size = 50, patience=None,
-            weight_save_path=None, weight_load_path=None,
+            num_epoch=1, batch_size=16, use_buffer = True, buffer_size = 50,
+            patience=None, weight_save_path=None, weight_load_path=None,
             plot_losses=False, draw_img=True, print_every=1):
 
         self._sess.run(self._init_op)
@@ -530,13 +530,14 @@ class CycleGAN():
 
             for e in range(num_epoch):
                 # Remove some old examples:
-                while len(X_generated_buffer) > buffer_size:
-                    ind = random.randrange(0, len(X_generated_buffer))
-                    X_generated_buffer.pop(ind)
+                if use_buffer:
+                    while len(X_generated_buffer) > buffer_size:
+                        ind = random.randrange(0, len(X_generated_buffer))
+                        X_generated_buffer.pop(ind)
 
-                while len(y_generated_buffer) > buffer_size:
-                    ind = random.randrange(0, len(y_generated_buffer))
-                    y_generated_buffer.pop(ind)
+                    while len(y_generated_buffer) > buffer_size:
+                        ind = random.randrange(0, len(y_generated_buffer))
+                        y_generated_buffer.pop(ind)
 
 
                 print("Epoch " + str(e + 1))
@@ -553,8 +554,7 @@ class CycleGAN():
                     X_idx = X_indicies[start_idx: start_idx + batch_size]
                     y_idx = y_indicies[start_idx: start_idx + batch_size]
 
-                    if len(X_generated_buffer) < batch_size:
-                        print("Train from newly generated data,")
+                    if len(X_generated_buffer) < batch_size or not use_buffer:
                         X_gen = self._sess.run(self._X_generated, feed_dict = {
                             self._y: y[y_idx, :],
                             self._is_training: True,
@@ -565,11 +565,14 @@ class CycleGAN():
                             self._is_training: True,
                             self._keep_prob_tensor: self._keep_prob
                         })
+                        
 
-                        for X_sample in X_gen:
-                            X_generated_buffer.append(X_sample)
-                        for y_sample in y_gen:
-                            y_generated_buffer.append(y_sample)
+                        if use_buffer:
+                            print("Train from newly generated data,")
+                            for X_sample in X_gen:
+                                X_generated_buffer.append(X_sample)
+                            for y_sample in y_gen:
+                                y_generated_buffer.append(y_sample)
 
                     else:
                         # print("Train from history data,")
