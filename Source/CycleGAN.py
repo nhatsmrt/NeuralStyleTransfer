@@ -8,6 +8,7 @@ import matplotlib.pyplot as plt
 import math
 import scipy.io
 import cv2
+import random
 
 
 class CycleGAN():
@@ -40,12 +41,14 @@ class CycleGAN():
             self._X,
             op_size = (tf.shape(self._X)[1], tf.shape(self._X)[2]),
             op_channel = self._y_channel,
+            inp_channel = self._X_channel,
             name = "gen_X_to_y"
         ) # Generated y from X
         self._X_generated = self.generator(
             self._y,
             op_size = (tf.shape(self._y)[1], tf.shape(self._y)[2]),
             op_channel = self._X_channel,
+            inp_channel = self._y_channel,
             name = "gen_y_to_X"
         ) # Generated X from y
 
@@ -58,22 +61,27 @@ class CycleGAN():
             self._optimizer_1 = tf.train.AdamOptimizer(self._lr)
             self._optimizer_2 = tf.train.AdamOptimizer(self._lr)
 
+            self._X_generated_train = tf.placeholder(shape = [None, None, None, self._X_channel], dtype = tf.float32)
+            self._y_generated_train = tf.placeholder(shape = [None, None, None, self._y_channel], dtype = tf.float32)
+
             self._X_discriminator = self.discriminator(self._X, name="disc_X")
-            self._X_generated_discriminator = self.discriminator(self._X_generated, name = "disc_X")
+            self._X_generated_discriminator = self.discriminator(self._X_generated_train, name = "disc_X")
             self._y_discriminator = self.discriminator(self._y, name="disc_y")
-            self._y_generated_discriminator = self.discriminator(self._y_generated, name="disc_y")
+            self._y_generated_discriminator = self.discriminator(self._y_generated_train, name="disc_y")
 
 
             self._cyc_X = self.generator(
                 self._y_generated,
                 op_size= (tf.shape(self._X)[1], tf.shape(self._X)[2]),
                 op_channel = self._X_channel,
+                inp_channel = self._y_channel,
                 name = "gen_y_to_X"
             )
             self._cyc_y = self.generator(
                 self._X_generated,
                 op_size  = (tf.shape(self._y)[1], tf.shape(self._y)[2]),
                 op_channel = self._y_channel,
+                inp_channel = self._X_channel,
                 name = "gen_X_to_y"
             )
 
@@ -121,8 +129,8 @@ class CycleGAN():
         self._sess = tf.Session()
         # self._saver = tf.train.Saver()
 
-    def generator(self, x, name, op_size, op_channel):
-        x_norm = tf.layers.batch_normalization(x, training=self._is_training)
+    def generator(self, x, name, op_size, op_channel, inp_channel):
+        x_norm = self.instance_norm(x, n_channel = inp_channel)
         conv_layer_1 = self.convolutional_module(
             x = x_norm,
             inp_channel=3,
@@ -156,8 +164,8 @@ class CycleGAN():
         op = resized * 255
         return op
 
-    def discriminator(self, x, name):
-        x_norm = tf.layers.batch_normalization(x, training=self._is_training)
+    def discriminator(self, x, name, inp_channel = 3):
+        x_norm = self.instance_norm(x, n_channel = inp_channel)
 
         conv_layer_1 = self.convolutional_module(
             x = x_norm,
@@ -182,7 +190,7 @@ class CycleGAN():
 
         return op
 
-    # Define layers and modules:
+    # DEFINE LAYERS AND MODULES:
     def convolutional_layer(self, x, name, inp_channel, op_channel, kernel_size=3, strides=1, padding='VALID',
                             pad=1, dropout=False, not_activated=False, not_normed=False):
         if pad != 0:
@@ -202,7 +210,7 @@ class CycleGAN():
         if not_normed:
             return a_conv
 
-        h_conv = tf.layers.batch_normalization(a_conv, training = self._is_training, renorm = True)
+        h_conv = self.instance_norm(a_conv, n_channel = op_channel)
         return h_conv
 
     def depthwise_separable_conv_layer(self, x, name, inp_channel, op_channel, depth_kernel,
@@ -238,7 +246,7 @@ class CycleGAN():
                                           output_shape=tf.stack(op_shape)) + b_deconv
         if activated:
             a_deconv = tf.nn.relu(z_deconv)
-            h_deconv = tf.layers.batch_normalization(a_deconv, training = self._is_training)
+            h_deconv = self.instance_norm(a_deconv, n_channel = op_shape[3])
             return h_deconv
 
         return z_deconv
@@ -283,9 +291,9 @@ class CycleGAN():
         conv2 = self.convolutional_layer(conv1, name + "_conv2", inp_channel, inp_channel, not_activated=True)
         res_layer = tf.nn.relu(tf.add(conv2, x, name="res"))
 
-        batch_norm = tf.layers.batch_normalization(res_layer, training=self._is_training, renorm = True)
+        normed = self.instance_norm(res_layer, n_channel = inp_channel)
 
-        return batch_norm
+        return normed
 
     def inception_module(self, x, name, inp_channel, op_channel):
         tower1_conv1 = self.convolutional_layer(x, kernel_size=1, padding='SAME', inp_channel=inp_channel,
@@ -419,7 +427,7 @@ class CycleGAN():
             return z
         else:
             a = tf.nn.relu(z)
-            a_norm = tf.layers.batch_normalization(a, training=self._is_training)
+            a_norm = self.instance_norm(a, n_channel = op_channel)
             return a_norm
 
     def max_pool_2x2(self, x):
@@ -427,6 +435,22 @@ class CycleGAN():
 
     def global_average_pooling(self, x):
         return tf.reduce_mean(x, axis=[1, 2])
+
+    def instance_norm(self, x, n_channel = 3, epsilon = 1e-8):
+        batch_size = tf.shape(x)[0]
+        # n_channel = tf.shape(x)[3]
+
+        mean = tf.reduce_mean(tf.reduce_mean(x, axis = 1), axis = 1)
+        mean_expanded = tf.reshape(mean, shape = [batch_size, 1, 1, n_channel])
+        var = tf.reduce_mean(tf.reduce_mean(tf.square(x - mean_expanded), axis = 1), axis = 1)
+        var_expanded = tf.reshape(var, shape = [batch_size, 1, 1, n_channel])
+
+        normalized = (x - mean_expanded) / tf.sqrt(var_expanded + epsilon)
+        scale = tf.Variable(tf.ones([n_channel]))
+        shift = tf.Variable(tf.zeros([n_channel]))
+
+        return scale * normalized + shift
+
 
     # Predict:
     def generate(self, X, batch_size=None, mode = 'X_to_y'):
@@ -478,8 +502,10 @@ class CycleGAN():
             return np.array(predictions)
 
     # Train:
-    def train(self, X, y, X_val = None, y_val = None, num_epoch=1, batch_size=16, patience=None, weight_save_path=None,
-            weight_load_path=None,
+    def train(
+            self, X, y, X_val = None, y_val = None,
+            num_epoch=1, batch_size=16, buffer_size = 50, patience=None,
+            weight_save_path=None, weight_load_path=None,
             plot_losses=False, draw_img=True, print_every=1):
 
         self._sess.run(self._init_op)
@@ -489,6 +515,9 @@ class CycleGAN():
 
 
         if num_epoch > 0:
+            X_generated_buffer = []
+            y_generated_buffer = []
+
             print('Training CycleGAN for ' + str(num_epoch) + ' epochs')
             X_indicies = np.arange(X.shape[0])
             y_indicies = np.arange(y.shape[0])
@@ -500,6 +529,16 @@ class CycleGAN():
             n_batch = min(X.shape[0], y.shape[0]) // batch_size
 
             for e in range(num_epoch):
+                # Remove some old examples:
+                while len(X_generated_buffer) > buffer_size:
+                    ind = random.randrange(0, len(X_generated_buffer))
+                    X_generated_buffer.pop(ind)
+
+                while len(y_generated_buffer) > buffer_size:
+                    ind = random.randrange(0, len(y_generated_buffer))
+                    y_generated_buffer.pop(ind)
+
+
                 print("Epoch " + str(e + 1))
                 np.random.shuffle(X_indicies)
                 np.random.shuffle(y_indicies)
@@ -514,10 +553,44 @@ class CycleGAN():
                     X_idx = X_indicies[start_idx: start_idx + batch_size]
                     y_idx = y_indicies[start_idx: start_idx + batch_size]
 
+                    if len(X_generated_buffer) < batch_size:
+                        print("Train from newly generated data,")
+                        X_gen = self._sess.run(self._X_generated, feed_dict = {
+                            self._y: y[y_idx, :],
+                            self._is_training: True,
+                            self._keep_prob_tensor: self._keep_prob
+                        })
+                        y_gen = self._sess.run(self._y_generated, feed_dict = {
+                            self._X: X[X_idx, :],
+                            self._is_training: True,
+                            self._keep_prob_tensor: self._keep_prob
+                        })
+
+                        for X_sample in X_gen:
+                            X_generated_buffer.append(X_sample)
+                        for y_sample in y_gen:
+                            y_generated_buffer.append(y_sample)
+
+                    else:
+                        # print("Train from history data,")
+                        X_buffer_indices = np.arange(len(X_generated_buffer))
+                        y_buffer_indices = np.arange(len(y_generated_buffer))
+
+                        np.random.shuffle(X_buffer_indices)
+                        np.random.shuffle(y_buffer_indices)
+
+                        X_buffer_idx = X_buffer_indices[:batch_size]
+                        y_buffer_idx = y_buffer_indices[:batch_size]
+
+                        X_gen = np.array(X_generated_buffer)[X_buffer_idx, :]
+                        y_gen = np.array(y_generated_buffer)[y_buffer_idx, :]
+
                     # Train networks:
                     feed_dict = {
                         self._X: X[X_idx, :],
                         self._y: y[y_idx, :],
+                        self._X_generated_train: X_gen,
+                        self._y_generated_train: y_gen,
                         self._is_training: True,
                         self._lr: lr,
                         self._keep_prob_tensor: self._keep_prob
@@ -532,17 +605,38 @@ class CycleGAN():
                     it_cnt += 1
 
                 if X_val is not None:
+                    X_gen = self._sess.run(self._X_generated, feed_dict={
+                        self._y: y_val,
+                        self._is_training: False,
+                        self._keep_prob_tensor: 1.0
+                    })
+                    y_gen = self._sess.run(self._y_generated, feed_dict={
+                        self._X: X_val,
+                        self._is_training: False,
+                        self._keep_prob_tensor: 1.0
+                    })
+
                     feed_dict = {
                         self._X: X_val,
                         self._y: y_val,
+                        self._X_generated_train: X_gen,
+                        self._y_generated_train: y_gen,
                         self._is_training: False,
                         self._keep_prob_tensor: 1.0
                     }
 
-                    val_loss = self._sess.run(self._total_loss, feed_dict = feed_dict)
+                    val_loss, g_X_loss, g_y_loss, d_X_loss, d_y_loss, cyc_loss = self._sess.run(
+                        [self._total_loss, self._g_X_loss, self._g_y_loss, self._d_X_loss, self._d_y_loss, self._cyc_loss],
+                        feed_dict = feed_dict
+                    )
                     val_losses.append(val_loss)
 
                     print("Validation Total Loss: " + str(val_loss))
+                    print("Gen X to y Loss: " + str(g_y_loss))
+                    print("Gen y to X Loss: " + str(g_X_loss))
+                    print("X disc Loss: " + str(d_X_loss))
+                    print("y disc Loss: " + str(d_y_loss))
+                    print("Cyc Loss: " + str(cyc_loss))
 
                     if val_loss <= min(val_losses) and weight_save_path is not None:
                         save_path = self._saver.save(self._sess, save_path=weight_save_path)
