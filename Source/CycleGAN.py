@@ -177,11 +177,10 @@ class CycleGAN():
         res_1 = self.residual_module(conv_layer_1, name = name + "res_1", inp_channel=4)
         res_2 = self.residual_module(res_1, name = name + "res_2", inp_channel=4)
         res_3 = self.residual_module(res_2, name = name + "res_3", inp_channel=4)
-        res_4 = self.residual_module(res_3, name = name + "res_4", inp_channel=4)
 
-        res_4_pooled = self.global_average_pooling(res_4)
+        res_3_pooled = self.global_average_pooling(res_3)
         fc = self.feed_forward(
-            res_4_pooled,
+            res_3_pooled,
             inp_channel = 4,
             op_channel = 1, op_layer = True,
             name = name + "_fc"
@@ -529,15 +528,6 @@ class CycleGAN():
             n_batch = min(X.shape[0], y.shape[0]) // batch_size
 
             for e in range(num_epoch):
-                # Remove some old examples:
-                if use_buffer:
-                    while len(X_generated_buffer) > buffer_size:
-                        ind = random.randrange(0, len(X_generated_buffer))
-                        X_generated_buffer.pop(ind)
-
-                    while len(y_generated_buffer) > buffer_size:
-                        ind = random.randrange(0, len(y_generated_buffer))
-                        y_generated_buffer.pop(ind)
 
 
                 print("Epoch " + str(e + 1))
@@ -550,6 +540,16 @@ class CycleGAN():
                     lr = 0.0002 - (e - 100) * 0.002 / (num_epoch - 100)
 
                 for i in range(n_batch):
+                    # Remove some old examples:
+                    if use_buffer:
+                        while len(X_generated_buffer) > buffer_size:
+                            ind = random.randrange(0, len(X_generated_buffer))
+                            X_generated_buffer.pop(ind)
+
+                        while len(y_generated_buffer) > buffer_size:
+                            ind = random.randrange(0, len(y_generated_buffer))
+                            y_generated_buffer.pop(ind)
+
                     start_idx = batch_size * i
                     X_idx = X_indicies[start_idx: start_idx + batch_size]
                     y_idx = y_indicies[start_idx: start_idx + batch_size]
@@ -565,7 +565,7 @@ class CycleGAN():
                             self._is_training: True,
                             self._keep_prob_tensor: self._keep_prob
                         })
-                        
+
 
                         if use_buffer:
                             print("Train from newly generated data,")
